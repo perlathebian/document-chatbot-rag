@@ -23,3 +23,5 @@ Thumbs.db
 
 # Pytest
 .pytest_cache/
+
+data/uploads/*.pdf

@@ -83,27 +83,29 @@ def ingest_document(file_path: str, doc_name: str) -> dict:
         "status": "success"
     }
 
-
 # Retrieval
-def query_db(question: str, k: int = 4) -> list[dict]:
+def query_db(question: str, k: int = 4, source_filter: str = None) -> list[dict]:
     """
     Embeds the question and retrieves the top-k most similar chunks from ChromaDB.
-    Does not call the LLM (pure retrieval only)
+    Optionally filters by source document name.
 
     Args:
         question: the user's question as plain text
         k: number of chunks to retrieve (default 4)
+        source_filter: if provided, only searches chunks from this document
 
     Returns:
-        list of dicts, each containing the chunk text and its metadata
+        list of dicts with chunk text and metadata
     """
+    # Build ChromaDB where filter if source is specified
+    filter_dict = {"source": source_filter} if source_filter else None
+
     results = vector_store.similarity_search(
         query=question,
-        k=k
+        k=k,
+        filter=filter_dict
     )
 
-    # similarity_search returns LangChain Document objects
-    # will convert them to plain dicts for easier handling later
     return [
         {
             "text": doc.page_content,
@@ -113,11 +115,10 @@ def query_db(question: str, k: int = 4) -> list[dict]:
         for doc in results
     ]
 
-
 # Answer Generation 
-def generate_answer(question: str) -> dict:
+def generate_answer(question: str, source_filter: str = None) -> dict:
     """
-    Full RAG answer generation:
+    Full RAG answer generation with optional source filtering:
     1. Retrieve relevant chunks from ChromaDB
     2. Build a prompt with those chunks as context
     3. Call LLM to generate answer
@@ -129,8 +130,10 @@ def generate_answer(question: str) -> dict:
     Returns:
         dict with "answer" (str) and "sources" (list of source filenames)
     """
+
     # Step 1: Retrieving relevant chunks
-    retrieved_chunks = query_db(question, k=8)
+    # Pass source_filter through to query_db
+    retrieved_chunks = query_db(question, k=4, source_filter=source_filter)
 
     if not retrieved_chunks:
         return {
