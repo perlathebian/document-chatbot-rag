@@ -1,0 +1,25 @@
+# Virtual environment
+venv/
+env/
+
+# Environment variables
+.env
+
+# ChromaDB storage
+db/vectordb/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# VSCode
+.vscode/
+
+# OS files
+Thumbs.db
+
+# Pytest
+.pytest_cache/
