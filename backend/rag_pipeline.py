@@ -2,6 +2,8 @@ import os
 from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+from langchain_groq import ChatGroq
+from langchain.schema import HumanMessage, SystemMessage
 from backend.utils import get_chroma_client, extract_text, chunk_text
 
 load_dotenv()
@@ -28,6 +30,16 @@ vector_store = Chroma(
     persist_directory=VECTORDB_PATH
 )
 
+
+# Initializing Groq LLM
+# ChatGroq connects to Groq's API using the GROQ_API_KEY from .env
+# llama3-8b-8192: fast, capable, 8192 token context window
+# temperature=0: deterministic responses(same question = same answer)
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    temperature=0,
+    api_key=os.getenv("GROQ_API_KEY")
+)
 
 # Ingestion
 def ingest_document(file_path: str, doc_name: str) -> dict:
@@ -100,3 +112,61 @@ def query_db(question: str, k: int = 4) -> list[dict]:
         }
         for doc in results
     ]
+
+
+# Answer Generation 
+def generate_answer(question: str) -> dict:
+    """
+    Full RAG answer generation:
+    1. Retrieve relevant chunks from ChromaDB
+    2. Build a prompt with those chunks as context
+    3. Call LLM to generate answer
+    4. Return answer + source document names
+
+    Args:
+        question: the user's question in plain text
+
+    Returns:
+        dict with "answer" (str) and "sources" (list of source filenames)
+    """
+    # Step 1: Retrieving relevant chunks
+    retrieved_chunks = query_db(question, k=8)
+
+    if not retrieved_chunks:
+        return {
+            "answer": "I don't have enough information to answer this question.",
+            "sources": []
+        }
+
+    # Step 2: Building context string from retrieved chunks
+    # Joining all chunk texts with a separator so the llm can read them distinctly
+    context = "\n\n---\n\n".join([chunk["text"] for chunk in retrieved_chunks])
+
+    # Step 3: Extracting unique source filenames for citations
+    sources = list(set([chunk["source"] for chunk in retrieved_chunks]))
+
+    # Step 4: Building the prompt
+    # SystemMessage: sets the llm's behavior rules
+    # HumanMessage: the actual question with context injected
+    system_message = SystemMessage(content=(
+        "You are a helpful assistant that answers questions based strictly on "
+        "the provided document context. "
+        "If the answer is not contained in the context, respond with: "
+        "'I don't have enough information in the provided documents to answer this question.' "
+        "Do not use any knowledge outside of the provided context. "
+        "Be concise and accurate."
+    ))
+
+    human_message = HumanMessage(content=(
+        f"Context from documents:\n\n{context}\n\n"
+        f"Question: {question}\n\n"
+        f"Answer based only on the context above:"
+    ))
+
+    # Step 5: Calling the Groq model
+    response = llm.invoke([system_message, human_message])
+
+    return {
+        "answer": response.content,
+        "sources": sources
+    }
