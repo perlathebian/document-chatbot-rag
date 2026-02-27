@@ -28,3 +28,7 @@ data/uploads/*.pdf
 
 # LOgging
 logs/*.log
+
+# coverage 
+.coverage
+htmlcov/
