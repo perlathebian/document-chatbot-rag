@@ -86,6 +86,11 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
+    # File size warning
+    file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
+    if file_size_mb > 10:
+        st.warning(f"⚠️ Large file detected ({file_size_mb:.1f} MB). Upload may take longer than usual.")
+
     # Only upload if it's a new file (not the same one already uploaded)
     if st.session_state.uploaded_doc != uploaded_file.name:
         with st.spinner(f"Ingesting '{uploaded_file.name}'..."):
