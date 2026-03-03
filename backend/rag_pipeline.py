@@ -8,6 +8,19 @@ from backend.utils import get_chroma_client, extract_text, chunk_text
 
 load_dotenv()
 
+import logging
+import time
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('logs/rag_pipeline.log', mode='a')
+    ]
+)
+logger = logging.getLogger(__name__)
+
 COLLECTION_NAME = "documents"
 VECTORDB_PATH   = "db/vectordb"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
@@ -15,31 +28,36 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 # Loading embedding model 
 # First run: downloads ~90MB model and caches locally
 # Subsequent runs: loads from cache
+logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
 embeddings = HuggingFaceEmbeddings(
     model_name=EMBEDDING_MODEL,
     model_kwargs={"device": "cpu"},     # gpu not needed
     encode_kwargs={"normalize_embeddings": True}  # normalizes vectors for better cosine similarity
 )
+logger.info("Embedding model loaded")
 
 # Initializing ChromaDB vector store
 # langchain_chroma.Chroma wraps ChromaDB and connects it to the embedding model
 # persist_directory: where ChromaDB writes its files on disk
+logger.info(f"Initializing ChromaDB at: {VECTORDB_PATH}")
 vector_store = Chroma(
     collection_name=COLLECTION_NAME,
     embedding_function=embeddings,
     persist_directory=VECTORDB_PATH
 )
-
+logger.info("ChromaDB initialized")
 
 # Initializing Groq LLM
 # ChatGroq connects to Groq's API using the GROQ_API_KEY from .env
 # llama3-8b-8192: fast, capable, 8192 token context window
 # temperature=0: deterministic responses(same question = same answer)
+logger.info("Initializing Groq LLM: llama-3.3-70b-versatile")
 llm = ChatGroq(
     model="llama-3.3-70b-versatile",
     temperature=0,
     api_key=os.getenv("GROQ_API_KEY")
 )
+logger.info("Groq LLM initialized")
 
 # Ingestion
 def ingest_document(file_path: str, doc_name: str) -> dict:
@@ -53,13 +71,18 @@ def ingest_document(file_path: str, doc_name: str) -> dict:
     Returns:
         dict with ingestion summary
     """
+    logger.info(f"Ingestion started: {doc_name} ({file_path})")
+
     # Step 1: Extracting raw text from PDF
     text = extract_text(file_path)
     if not text:
+        logger.error(f"Text extraction failed for: {doc_name}; may be image-based PDF")
         raise ValueError(f"Could not extract text from {file_path}. PDF may be image-based.")
+    logger.info(f"Text extracted: {len(text)} chars from {doc_name}")
 
     # Step 2: Splitting into chunks
     chunks = chunk_text(text)
+    logger.info(f"Text chunked: {len(chunks)} chunks created from {doc_name}")
 
     # Step 3: Building metadata for each chunk
     # Each chunk gets tagged with its source document and position
@@ -71,12 +94,17 @@ def ingest_document(file_path: str, doc_name: str) -> dict:
 
     # Step 5: Adding to ChromaDB
     # LangChain's Chroma.add_texts() handles embedding & storage in one call
-    vector_store.add_texts(
-        texts=chunks,
-        metadatas=metadatas,
-        ids=ids
-    )
+    try:
+        vector_store.add_texts(
+            texts=chunks,
+            metadatas=metadatas,
+            ids=ids
+        )
+    except Exception as e:
+        logger.error(f"ChromaDB storage failed for {doc_name}: {e}")
+        raise
 
+    logger.info(f"Ingestion complete: {len(chunks)} chunks stored for {doc_name}")
     return {
         "document": doc_name,
         "chunks_stored": len(chunks),
@@ -97,14 +125,29 @@ def query_db(question: str, k: int = 4, source_filter: str = None) -> list[dict]
     Returns:
         list of dicts with chunk text and metadata
     """
+    logger.info(f"Querying ChromaDB: '{question[:80]}' (k={k}, filter={source_filter})")
+
     # Build ChromaDB where filter if source is specified
     filter_dict = {"source": source_filter} if source_filter else None
 
-    results = vector_store.similarity_search(
-        query=question,
-        k=k,
-        filter=filter_dict
-    )
+    try:
+        # similarity_search_with_score returns (Document, score) tuples
+        results_with_scores = vector_store.similarity_search_with_score(
+            query=question,
+            k=k,
+            filter=filter_dict
+        )
+    except Exception as e:
+        logger.error(f"ChromaDB query failed: {e}")
+        raise
+
+    # Log retrieval scores for each chunk
+    for i, (doc, score) in enumerate(results_with_scores):
+        logger.info(
+            f"Chunk {i+1}: source={doc.metadata.get('source', 'unknown')}, "
+            f"chunk_index={doc.metadata.get('chunk_index', -1)}, "
+            f"similarity_score={score:.4f}"
+        )
 
     return [
         {
@@ -112,8 +155,9 @@ def query_db(question: str, k: int = 4, source_filter: str = None) -> list[dict]
             "source": doc.metadata.get("source", "unknown"),
             "chunk_index": doc.metadata.get("chunk_index", -1)
         }
-        for doc in results
+        for doc, score in results_with_scores
     ]
+
 
 # Answer Generation 
 def generate_answer(question: str, source_filter: str = None) -> dict:
@@ -130,16 +174,24 @@ def generate_answer(question: str, source_filter: str = None) -> dict:
     Returns:
         dict with "answer" (str) and "sources" (list of source filenames)
     """
+    logger.info(f"generate_answer called: '{question[:80]}'")
 
     # Step 1: Retrieving relevant chunks
     # Pass source_filter through to query_db
-    retrieved_chunks = query_db(question, k=4, source_filter=source_filter)
+    try:
+        retrieved_chunks = query_db(question, k=4, source_filter=source_filter)
+    except Exception as e:
+        logger.error(f"Retrieval failed: {e}")
+        raise
 
     if not retrieved_chunks:
+        logger.warning("No chunks retrieved: returning fallback answer")
         return {
             "answer": "I don't have enough information to answer this question.",
             "sources": []
         }
+    logger.info(f"Retrieved {len(retrieved_chunks)} chunks for answer generation")
+
 
     # Step 2: Building context string from retrieved chunks
     # Joining all chunk texts with a separator so the llm can read them distinctly
@@ -166,8 +218,27 @@ def generate_answer(question: str, source_filter: str = None) -> dict:
         f"Answer based only on the context above:"
     ))
 
-    # Step 5: Calling the Groq model
-    response = llm.invoke([system_message, human_message])
+    # Step 5: Calling llm with timing
+    logger.info("Calling Groq LLM...")
+    
+    llm_start = time.time()
+    try:
+        response = llm.invoke([system_message, human_message])
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "timeout" in error_msg or "timed out" in error_msg:
+            logger.error(f"Groq API timeout: {e}")
+            raise TimeoutError(f"LLM request timed out: {e}")
+        elif "rate limit" in error_msg or "429" in error_msg:
+            logger.error(f"Groq API rate limit: {e}")
+            raise RuntimeError(f"LLM rate limit exceeded: {e}")
+        else:
+            logger.error(f"Groq API error: {e}")
+            raise
+
+    llm_elapsed = time.time() - llm_start
+    logger.info(f"LLM response received in {llm_elapsed:.2f}s ({len(response.content)} chars)")
+
 
     return {
         "answer": response.content,
