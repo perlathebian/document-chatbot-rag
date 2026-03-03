@@ -7,7 +7,7 @@
 
 A production-ready RAG (Retrieval-Augmented Generation) system that lets you upload PDF documents and ask questions about their contents, with answers grounded in your documents and source citations.
 
-**[Live Demo →](https://huggingface.co/spaces/perlathebian/document-chatbot-rag)**
+**Demo Video:** [Watch Demo](https://1drv.ms/v/c/fe2fb007f7f25e16/IQCwsS6JsPUnR4ZLU4HYheIdASnRVbCcgm_nkaoDTUpC-YE?e=ethirp)
 
 ---
 
